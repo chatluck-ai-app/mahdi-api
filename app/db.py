@@ -87,10 +87,21 @@ class RecoveryGrant(Base):
     code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     new_device_id: Mapped[int] = mapped_column(ForeignKey("mahdi_devices.id"), index=True)
     old_device_id: Mapped[int | None] = mapped_column(ForeignKey("mahdi_devices.id"), nullable=True)
+    max_message_id: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|consumed|expired
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RecoveryAttempt(Base):
+    __tablename__ = "mahdi_recovery_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("mahdi_devices.id"), index=True)
+    code: Mapped[str] = mapped_column(String(40), default="")
+    success: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ImportLog(Base):
