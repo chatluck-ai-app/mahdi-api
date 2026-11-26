@@ -431,9 +431,114 @@ def test_recovery_code_bound_to_requesting_device(client, auth, auth2):
     # a third device cannot claim a code it did not request
     r3 = client.post("/v1/devices/register")
     third = {"Authorization": f"Bearer {r3.json()['device_token']}"}
-    assert client.post("/v1/recovery/claim", json={"code": code}, headers=third).status_code == 403
-    # unknown code
-    assert client.post("/v1/recovery/claim", json={"code": "XXXX-XXXX-XXXX-XXXX"}, headers=auth2).status_code == 404
+    foreign = client.post("/v1/recovery/claim", json={"code": code}, headers=third)
+    unknown = client.post("/v1/recovery/claim", json={"code": "XXXX-XXXX-XXXX-XXXX"}, headers=auth2)
+    # uniform response: a guesser cannot tell a real code from an unknown one
+    assert foreign.status_code == 404
+    assert unknown.status_code == 404
+    assert foreign.json() == unknown.json()
+    # /status is uniform too
+    assert client.post("/v1/recovery/status", json={"code": code}, headers=third).status_code == 404
+
+
+def test_register_rate_limited_per_ip(client):
+    ip = {"X-Forwarded-For": "203.0.113.7"}
+    for _ in range(10):
+        r = client.post("/v1/devices/register", headers=ip)
+        assert r.status_code == 200, r.text
+    r = client.post("/v1/devices/register", headers=ip)
+    assert r.status_code == 429
+
+
+def test_claim_rate_limited_per_ip(client):
+    from app.db import RecoveryAttempt
+
+    db = SessionLocal()
+    try:
+        db.query(RecoveryAttempt).delete()
+        db.commit()
+    finally:
+        db.close()
+    ip = "203.0.113.8"
+    for i in range(30):
+        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.114.{i}"})
+        assert reg.status_code == 200
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+        r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
+        assert r.status_code == 404, (i, r.status_code, r.text)
+    reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": "203.0.114.99"})
+    h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+    r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
+    assert r.status_code == 429
+    assert "network" in r.json()["detail"]
+
+
+def test_grant_locks_after_10_failures_despite_new_devices(client, auth2):
+    """Rotating fresh device tokens cannot multiply guesses against one code:
+    after 10 total failed claims the grant locks for everyone, including the
+    rightful owner."""
+    from app.db import RecoveryAttempt, RecoveryGrant
+
+    db = SessionLocal()
+    try:
+        db.query(RecoveryAttempt).delete()
+        db.commit()
+    finally:
+        db.close()
+    code = client.post("/v1/recovery/request", headers=auth2).json()["code"]
+    # 10 failures spread over 4 freshly-registered devices (under each one's
+    # per-device limit of 5, so the per-device layer alone would allow more)
+    for d in range(4):
+        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.115.{d}"})
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": f"203.0.116.{d}"}
+        for _ in range(3 if d < 2 else 2):
+            r = client.post("/v1/recovery/claim", json={"code": code}, headers=h)
+            assert r.status_code == 404, r.text
+    db = SessionLocal()
+    try:
+        grant = db.query(RecoveryGrant).filter(RecoveryGrant.code == code).first()
+        assert grant.status == "locked"
+    finally:
+        db.close()
+    # owner is locked out too
+    r = client.post("/v1/recovery/claim", json={"code": code}, headers=auth2)
+    assert r.status_code == 410
+    assert "locked" in r.json()["detail"]
+
+
+def test_global_backoff_after_50_failures(client):
+    from app.db import RecoveryAttempt
+
+    db = SessionLocal()
+    try:
+        db.query(RecoveryAttempt).delete()
+        db.commit()
+    finally:
+        db.close()
+    seen_global_429 = False
+    fails = 0
+    d = 0
+    while not seen_global_429 and d < 20:
+        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.117.{d}"})
+        assert reg.status_code == 200
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": f"203.0.118.{d}"}
+        for _ in range(5):
+            r = client.post("/v1/recovery/claim", json={"code": "BBBB-CCCC-DDDD-EEEE"}, headers=h)
+            if r.status_code == 429 and "temporarily busy" in r.json()["detail"]:
+                seen_global_429 = True
+                break
+            assert r.status_code == 404, r.text
+            fails += 1
+        d += 1
+    assert seen_global_429, f"global backoff never tripped after {fails} failures"
+    assert fails >= 50 - 5  # tripped at the 50-failure mark
+    # leave a clean slate: later tests exercise the per-device layer
+    db = SessionLocal()
+    try:
+        db.query(RecoveryAttempt).delete()
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_recovery_expired_code_cannot_claim(client, auth2):

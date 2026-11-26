@@ -1,4 +1,5 @@
 import os
+import secrets
 import sys
 import tempfile
 
@@ -21,13 +22,16 @@ def client():
 
 @pytest.fixture()
 def auth(client):
-    r = client.post("/v1/devices/register")
+    # unique X-Forwarded-For per fixture: per-IP throttles must not couple tests
+    ip = "10.255." + str(secrets.randbelow(255)) + "." + str(secrets.randbelow(255))
+    r = client.post("/v1/devices/register", headers={"X-Forwarded-For": ip})
     assert r.status_code == 200, r.text
-    return {"Authorization": f"Bearer {r.json()['device_token']}"}
+    return {"Authorization": f"Bearer {r.json()['device_token']}", "X-Forwarded-For": ip}
 
 
 @pytest.fixture()
 def auth2(client):
-    r = client.post("/v1/devices/register")
+    ip = "10.254." + str(secrets.randbelow(255)) + "." + str(secrets.randbelow(255))
+    r = client.post("/v1/devices/register", headers={"X-Forwarded-For": ip})
     assert r.status_code == 200, r.text
-    return {"Authorization": f"Bearer {r.json()['device_token']}"}
+    return {"Authorization": f"Bearer {r.json()['device_token']}", "X-Forwarded-For": ip}
