@@ -17,5 +17,7 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-lite-latest
       - key: AI_PROVIDER_PRIORITY
         value: gemini,openai,anthropic
