@@ -442,7 +442,7 @@ def test_recovery_code_bound_to_requesting_device(client, auth, auth2):
 
 
 def test_register_rate_limited_per_ip(client):
-    ip = {"X-Forwarded-For": "203.0.113.7"}
+    ip = {"CF-Connecting-IP": "203.0.113.7"}
     for _ in range(10):
         r = client.post("/v1/devices/register", headers=ip)
         assert r.status_code == 200, r.text
@@ -461,13 +461,13 @@ def test_claim_rate_limited_per_ip(client):
         db.close()
     ip = "203.0.113.8"
     for i in range(30):
-        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.114.{i}"})
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.114.{i}"})
         assert reg.status_code == 200
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
         r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
         assert r.status_code == 404, (i, r.status_code, r.text)
-    reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": "203.0.114.99"})
-    h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": "203.0.114.99"})
+    h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
     r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
     assert r.status_code == 429
     assert "network" in r.json()["detail"]
@@ -489,8 +489,8 @@ def test_grant_locks_after_10_failures_despite_new_devices(client, auth2):
     # 10 failures spread over 4 freshly-registered devices (under each one's
     # per-device limit of 5, so the per-device layer alone would allow more)
     for d in range(4):
-        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.115.{d}"})
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": f"203.0.116.{d}"}
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.115.{d}"})
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.116.{d}"}
         for _ in range(3 if d < 2 else 2):
             r = client.post("/v1/recovery/claim", json={"code": code}, headers=h)
             assert r.status_code == 404, r.text
@@ -519,9 +519,9 @@ def test_global_backoff_after_50_failures(client):
     fails = 0
     d = 0
     while not seen_global_429 and d < 20:
-        reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": f"203.0.117.{d}"})
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.117.{d}"})
         assert reg.status_code == 200
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": f"203.0.118.{d}"}
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.118.{d}"}
         for _ in range(5):
             r = client.post("/v1/recovery/claim", json={"code": "BBBB-CCCC-DDDD-EEEE"}, headers=h)
             if r.status_code == 429 and "temporarily busy" in r.json()["detail"]:
@@ -600,9 +600,9 @@ def test_recovery_ignores_old_or_assistant_phrase(client, auth, auth2):
 
 
 def _fresh_device(client, ip):
-    reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": ip})
+    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": ip})
     assert reg.status_code == 200, reg.text
-    return {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+    return {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
 
 
 def _clear_attempts():
@@ -617,18 +617,28 @@ def _clear_attempts():
 
 
 def test_xff_spoofing_does_not_bypass_ip_limits(client):
-    # attacker varies the FIRST (client-controlled) XFF entries; Render's proxy
-    # appends the real client IP as the rightmost entry, emulated here by the
-    # constant last entry. The limit must key on the rightmost entry only.
+    # attacker varies every client-controlled header part (all XFF entries);
+    # CF-Connecting-IP is overwritten by Cloudflare on the real chain, so the
+    # constant CF value emulates the real client IP. The limit must key on it.
     real_ip = "203.0.113.50"
     for i in range(10):
-        h = {"X-Forwarded-For": f"1.2.3.{i}, 10.0.0.{i}, {real_ip}"}
+        h = {"CF-Connecting-IP": real_ip, "X-Forwarded-For": f"1.2.3.{i}, 10.0.0.{i}"}
         r = client.post("/v1/devices/register", headers=h)
         assert r.status_code == 200, (i, r.text)
-    r = client.post(
-        "/v1/devices/register", headers={"X-Forwarded-For": f"9.9.9.9, {real_ip}"}
-    )
-    assert r.status_code == 429
+    h = {"CF-Connecting-IP": real_ip, "X-Forwarded-For": "9.9.9.9"}
+    assert client.post("/v1/devices/register", headers=h).status_code == 429
+
+
+def test_xff_fallback_second_from_right(client):
+    # no CF header (non-Cloudflare chain): second-from-right XFF entry is the
+    # client as observed by the trusted edge; the rightmost (edge) may vary
+    real_ip = "203.0.113.60"
+    for i in range(10):
+        h = {"X-Forwarded-For": f"{real_ip}, 198.51.100.{i}"}
+        r = client.post("/v1/devices/register", headers=h)
+        assert r.status_code == 200, (i, r.text)
+    h = {"X-Forwarded-For": f"{real_ip}, 198.51.100.250"}
+    assert client.post("/v1/devices/register", headers=h).status_code == 429
 
 
 def test_legit_owner_recovers_under_global_pressure(client, auth, auth2):
