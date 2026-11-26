@@ -13,14 +13,37 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..auth import current_device
-from ..db import Conversation, Device, Message, RecoveryGrant, get_db
+from ..db import Conversation, Device, Message, RecoveryAttempt, RecoveryGrant, get_db
 
 router = APIRouter(prefix="/v1/recovery", tags=["recovery"])
 
 GRANT_TTL_MINUTES = 15
+MAX_FAILED_CLAIMS = 5
+CLAIM_WINDOW_MINUTES = 10
+
+
+def _record_attempt(db: Session, device_id: int, code: str, success: bool) -> None:
+    db.add(RecoveryAttempt(device_id=device_id, code=code[:40], success=success))
+    db.commit()
+
+
+def _check_rate_limit(db: Session, device_id: int) -> None:
+    since = _now() - timedelta(minutes=CLAIM_WINDOW_MINUTES)
+    fails = (
+        db.query(RecoveryAttempt)
+        .filter(
+            RecoveryAttempt.device_id == device_id,
+            RecoveryAttempt.success.is_(False),
+            RecoveryAttempt.created_at >= since.replace(tzinfo=None),
+        )
+        .count()
+    )
+    if fails >= MAX_FAILED_CLAIMS:
+        raise HTTPException(status_code=429, detail="too many failed attempts; wait 10 minutes")
 
 
 def _now() -> datetime:
@@ -52,6 +75,7 @@ def request_grant(device: Device = Depends(current_device), db: Session = Depend
         code=_fresh_code(),
         new_device_id=device.id,
         expires_at=_now() + timedelta(minutes=GRANT_TTL_MINUTES),
+        max_message_id=db.query(func.max(Message.id)).scalar() or 0,
     )
     db.add(grant)
     db.commit()
@@ -72,28 +96,45 @@ class ClaimIn(BaseModel):
 
 @router.post("/claim")
 def claim_grant(body: ClaimIn, device: Device = Depends(current_device), db: Session = Depends(get_db)):
-    grant = _get_grant(db, body.code)
+    _check_rate_limit(db, device.id)
+    try:
+        grant = _get_grant(db, body.code)
+    except HTTPException:
+        _record_attempt(db, device.id, body.code, False)
+        raise
     if grant.new_device_id != device.id:
+        _record_attempt(db, device.id, body.code, False)
         raise HTTPException(status_code=403, detail="this code belongs to another device")
     if grant.status == "consumed":
         raise HTTPException(status_code=409, detail="code already used")
     if grant.status != "pending":
+        _record_attempt(db, device.id, body.code, False)
         raise HTTPException(status_code=410, detail=f"code {grant.status}")
 
-    # find the device whose history contains the phrase (excluding the new one)
+    # find the device whose history contains the phrase (excluding the new one).
+    # Only a user-role message written AFTER the grant was created counts: it had
+    # to be written through the chat endpoint with that device's bearer token.
+    # (id threshold, not timestamps: sqlite string datetime compare is unreliable)
     matches = (
         db.query(Conversation.device_id)
         .join(Message, Message.conversation_id == Conversation.id)
-        .filter(Message.content.contains(grant.code), Conversation.device_id != device.id)
+        .filter(
+            Message.content.contains(grant.code),
+            Message.role == "user",
+            Message.id > grant.max_message_id,
+            Conversation.device_id != device.id,
+        )
         .distinct()
         .all()
     )
     if not matches:
+        _record_attempt(db, device.id, body.code, False)
         raise HTTPException(
             status_code=409,
             detail="phrase not seen in the old app yet; send it as a chat message there first",
         )
     if len(matches) > 1:
+        _record_attempt(db, device.id, body.code, False)
         raise HTTPException(status_code=409, detail="phrase seen on multiple devices; request a new code")
     old_device_id = matches[0][0]
 
@@ -126,6 +167,7 @@ def claim_grant(body: ClaimIn, device: Device = Depends(current_device), db: Ses
     grant.old_device_id = old_device_id
     grant.consumed_at = _now()
     db.commit()
+    _record_attempt(db, device.id, body.code, True)
     return {
         "status": "recovered",
         "conversations": n_convs,
