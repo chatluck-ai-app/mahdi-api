@@ -1,10 +1,9 @@
 import os
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./mahdi_local.db")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
-elif DATABASE_URL.startswith("postgresql+asyncpg://"):
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgresql+asyncpg://"):]
+if DATABASE_URL.startswith(("postgres://", "postgresql")):
+    # psycopg2 is the installed driver; normalize any postgres URL form to it
+    DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL.split("://", 1)[1]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
