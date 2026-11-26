@@ -49,6 +49,49 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentRun(Base):
+    __tablename__ = "mahdi_agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("mahdi_devices.id"), index=True)
+    goal: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="planning")
+    plan_json: Mapped[str] = mapped_column(Text, default="[]")
+    result: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Approval(Base):
+    __tablename__ = "mahdi_approvals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("mahdi_devices.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("mahdi_agent_runs.id"), index=True)
+    step_index: Mapped[int] = mapped_column()
+    kind: Mapped[str] = mapped_column(String(30))
+    title: Mapped[str] = mapped_column(String(200), default="")
+    args_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    result_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Artifact(Base):
+    __tablename__ = "mahdi_artifacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("mahdi_devices.id"), index=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("mahdi_agent_runs.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(30), default="file")
+    name: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
 
