@@ -597,3 +597,75 @@ def test_recovery_ignores_old_or_assistant_phrase(client, auth, auth2):
         db.close()
     r = client.post("/v1/recovery/claim", json={"code": code}, headers=auth2)
     assert r.status_code == 409  # assistant echo alone never proves possession
+
+
+def _fresh_device(client, ip):
+    reg = client.post("/v1/devices/register", headers={"X-Forwarded-For": ip})
+    assert reg.status_code == 200, reg.text
+    return {"Authorization": f"Bearer {reg.json()['device_token']}", "X-Forwarded-For": ip}
+
+
+def _clear_attempts():
+    from app.db import RecoveryAttempt
+
+    db = SessionLocal()
+    try:
+        db.query(RecoveryAttempt).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_xff_spoofing_does_not_bypass_ip_limits(client):
+    # attacker varies the FIRST (client-controlled) XFF entries; Render's proxy
+    # appends the real client IP as the rightmost entry, emulated here by the
+    # constant last entry. The limit must key on the rightmost entry only.
+    real_ip = "203.0.113.50"
+    for i in range(10):
+        h = {"X-Forwarded-For": f"1.2.3.{i}, 10.0.0.{i}, {real_ip}"}
+        r = client.post("/v1/devices/register", headers=h)
+        assert r.status_code == 200, (i, r.text)
+    r = client.post(
+        "/v1/devices/register", headers={"X-Forwarded-For": f"9.9.9.9, {real_ip}"}
+    )
+    assert r.status_code == 429
+
+
+def test_legit_owner_recovers_under_global_pressure(client, auth, auth2):
+    """An attacker flooding failed guesses trips the global backoff, but a
+    legitimate owner holding a pending grant on their own device must still
+    recover; the attacker stays blocked."""
+    from app.db import RecoveryAttempt
+
+    _clear_attempts()
+    # flood: failed guesses from rotating fresh devices and IPs until the
+    # global backoff trips (50 failures / 10 min)
+    tripped = False
+    for d in range(20):
+        h = _fresh_device(client, f"203.0.120.{d}")
+        for _ in range(5):
+            r = client.post("/v1/recovery/claim", json={"code": "CCCC-DDDD-EEEE-FFFF"}, headers=h)
+            if r.status_code == 429 and "temporarily busy" in r.json()["detail"]:
+                tripped = True
+                break
+            assert r.status_code == 404, r.text
+        if tripped:
+            break
+    assert tripped, "global backoff never tripped during the flood"
+
+    # legitimate flow under pressure: old device = auth, new device = auth2
+    client.post("/v1/chat", json={"message": "محادثة قديمة تحت الضغط"}, headers=auth)
+    code = client.post("/v1/recovery/request", headers=auth2).json()["code"]
+    client.post("/v1/chat", json={"message": f"الكود {code}"}, headers=auth)
+    r = client.post("/v1/recovery/claim", json={"code": code}, headers=auth2)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "recovered"
+    assert r.json()["original_untouched"] is True
+
+    # the attacker is still blocked afterwards
+    h = _fresh_device(client, "203.0.121.1")
+    r = client.post("/v1/recovery/claim", json={"code": "DDDD-EEEE-FFFF-0000"}, headers=h)
+    assert r.status_code == 429
+    assert "temporarily busy" in r.json()["detail"]
+
+    _clear_attempts()
