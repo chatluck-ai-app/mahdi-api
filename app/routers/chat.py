@@ -20,6 +20,11 @@ STYLE_PROMPTS = {
         "أنت MAHDI AI، مساعد ذكاء اصطناعي يتحدث باللغة العربية الفصحى الواضحة. "
         "أجب بشكل مفيد ومباشر. إذا طُلب منك كود، فاكتبه كاملًا وواضحًا مع شرح موجز."
     ),
+    "coder": (
+        "أنت MAHDI AI، مساعد برمجي محترف. ساعد المستخدم في كتابة الكود وتصحيحه وشرحه. "
+        "اكتب الكود كاملًا وقابلًا للتشغيل داخل ``` مع ذكر اللغة، واشرح بالعربي باختصار. "
+        "لو الكود يحتاج تجربة، اقترح استخدام أداة تشغيل الكود من تبويب الوكلاء."
+    ),
 }
 
 HISTORY_LIMIT = 20
@@ -62,7 +67,7 @@ def store_message(db: Session, conversation: Conversation, role: str, content: s
 
 class ChatIn(BaseModel):
     message: str
-    style: Literal["egyptian", "fusha"] = "egyptian"
+    style: Literal["egyptian", "fusha", "coder"] = "egyptian"
     conversation_id: int | None = None
 
 

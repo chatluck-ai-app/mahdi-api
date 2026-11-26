@@ -46,6 +46,79 @@ def _own_conversation(db: Session, device: Device, conversation_id: int) -> Conv
     return conv
 
 
+@router.post("/import")
+def import_history(
+    payload: dict, device: Device = Depends(current_device), db: Session = Depends(get_db)
+):
+    """Restore a mahdi-history-v1 export into this device (copies, new ids)."""
+    if payload.get("format") != "mahdi-history-v1" or not isinstance(payload.get("conversations"), list):
+        raise HTTPException(status_code=422, detail="not a mahdi-history-v1 export")
+    imported_convs = 0
+    imported_msgs = 0
+    for conv in payload["conversations"][:200]:
+        if not isinstance(conv, dict):
+            continue
+        new_conv = Conversation(
+            device_id=device.id,
+            title=str(conv.get("title") or "")[:120],
+            style=conv.get("style") if conv.get("style") in ("egyptian", "fusha", "coder") else "egyptian",
+        )
+        db.add(new_conv)
+        db.flush()
+        imported_convs += 1
+        for m in (conv.get("messages") or [])[:2000]:
+            if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
+                continue
+            db.add(
+                Message(
+                    conversation_id=new_conv.id,
+                    role=m["role"],
+                    content=str(m.get("content") or ""),
+                    provider=str(m.get("provider") or "")[:20],
+                )
+            )
+            imported_msgs += 1
+    db.commit()
+    return {"imported_conversations": imported_convs, "imported_messages": imported_msgs}
+
+
+@router.get("/export")
+def export_history(device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """Full JSON export of this device's chat history (backup / portability)."""
+    convs = (
+        db.query(Conversation)
+        .filter(Conversation.device_id == device.id)
+        .order_by(Conversation.id)
+        .all()
+    )
+    out = []
+    for conv in convs:
+        msgs = (
+            db.query(Message)
+            .filter(Message.conversation_id == conv.id)
+            .order_by(Message.id)
+            .all()
+        )
+        out.append(
+            {
+                "id": conv.id,
+                "title": conv.title,
+                "style": conv.style,
+                "created_at": conv.created_at.isoformat() if conv.created_at else None,
+                "messages": [
+                    {
+                        "role": m.role,
+                        "content": m.content,
+                        "provider": m.provider,
+                        "created_at": m.created_at.isoformat() if m.created_at else None,
+                    }
+                    for m in msgs
+                ],
+            }
+        )
+    return {"format": "mahdi-history-v1", "conversations": out}
+
+
 @router.get("/{conversation_id}")
 def get_conversation(
     conversation_id: int, device: Device = Depends(current_device), db: Session = Depends(get_db)
