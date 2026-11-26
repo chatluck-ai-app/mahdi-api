@@ -1,9 +1,11 @@
 from typing import AsyncIterator
 
+import asyncio
+
 from .. import config
 from .anthropic import AnthropicProvider
 from .gemini import GeminiProvider
-from .mock import MockProvider
+from .mock import FlakyProvider, MockProvider
 from .openai import OpenAIProvider
 
 _PROVIDERS = {
@@ -11,7 +13,11 @@ _PROVIDERS = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
     "mock": MockProvider,
+    "flaky": FlakyProvider,
 }
+
+MAX_ATTEMPTS_PER_PROVIDER = 2
+RETRY_DELAY_SECONDS = 0.7
 
 
 def get_chain():
@@ -31,14 +37,17 @@ def available_providers() -> list[str]:
 
 
 async def complete(messages: list[dict], system: str) -> tuple[str, str]:
-    """Return (text, provider_name), falling back through the chain."""
+    """Return (text, provider_name); one retry per provider, then fall back."""
     last_err: Exception | None = None
     for provider in get_chain():
-        try:
-            text = await provider.complete(messages, system)
-            return text, provider.name
-        except Exception as e:  # noqa: BLE001 - try the next provider
-            last_err = e
+        for attempt in range(MAX_ATTEMPTS_PER_PROVIDER):
+            try:
+                text = await provider.complete(messages, system)
+                return text, provider.name
+            except Exception as e:  # noqa: BLE001 - retry once, then next provider
+                last_err = e
+                if attempt + 1 < MAX_ATTEMPTS_PER_PROVIDER:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
     raise RuntimeError(f"all providers failed: {last_err}")
 
 
