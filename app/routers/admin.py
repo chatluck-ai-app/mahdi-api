@@ -1,4 +1,6 @@
-"""Admin summary + minimal dashboard. Disabled unless ADMIN_TOKEN is set."""
+"""Admin summary + minimal dashboard. Disabled unless ADMIN_TOKEN is set.
+Every admin route requires the valid token in the X-Admin-Token header;
+the token never appears in URLs, the app, or the repo."""
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -45,9 +47,8 @@ async function load(){
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    if not config.ADMIN_TOKEN:
-        raise HTTPException(status_code=404, detail="not found")
+def dashboard(x_admin_token: str = Header(default="")):
+    _check(x_admin_token)
     return DASHBOARD_HTML
 
 

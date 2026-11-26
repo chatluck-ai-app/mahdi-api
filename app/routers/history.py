@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+import hashlib
+import json
 
 from ..auth import current_device
-from ..db import Conversation, Device, Message, get_db
+from ..db import Conversation, Device, ImportLog, Message, get_db
 
 router = APIRouter(prefix="/v1/history", tags=["history"])
 
@@ -50,9 +52,29 @@ def _own_conversation(db: Session, device: Device, conversation_id: int) -> Conv
 def import_history(
     payload: dict, device: Device = Depends(current_device), db: Session = Depends(get_db)
 ):
-    """Restore a mahdi-history-v1 export into this device (copies, new ids)."""
+    """Restore a mahdi-history-v1 export into this device (copies, new ids).
+
+    Idempotent: re-importing the same export into the same device is a no-op
+    that reports already_imported instead of duplicating conversations.
+    """
     if payload.get("format") != "mahdi-history-v1" or not isinstance(payload.get("conversations"), list):
         raise HTTPException(status_code=422, detail="not a mahdi-history-v1 export")
+
+    canonical = json.dumps(payload["conversations"], ensure_ascii=False, sort_keys=True)
+    export_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    prior = (
+        db.query(ImportLog)
+        .filter(ImportLog.device_id == device.id, ImportLog.export_hash == export_hash)
+        .first()
+    )
+    if prior is not None:
+        return {
+            "already_imported": True,
+            "imported_conversations": 0,
+            "imported_messages": 0,
+            "original_import": {"conversations": prior.conversations, "messages": prior.messages},
+        }
+
     imported_convs = 0
     imported_msgs = 0
     for conv in payload["conversations"][:200]:
@@ -78,8 +100,16 @@ def import_history(
                 )
             )
             imported_msgs += 1
+    db.add(
+        ImportLog(
+            device_id=device.id,
+            export_hash=export_hash,
+            conversations=imported_convs,
+            messages=imported_msgs,
+        )
+    )
     db.commit()
-    return {"imported_conversations": imported_convs, "imported_messages": imported_msgs}
+    return {"already_imported": False, "imported_conversations": imported_convs, "imported_messages": imported_msgs}
 
 
 @router.get("/export")
