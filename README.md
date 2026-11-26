@@ -18,7 +18,7 @@ FastAPI + PostgreSQL. REST + WebSocket. No API keys in the Android app; all AI k
 | `GEMINI_API_KEY` | yes (today) | from vault entry "Gemini API key 2" |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | no | adapters already wired; they join the chain only when a key exists |
 | `AI_PROVIDER_PRIORITY` | no | default `gemini,openai,anthropic`; fallback is in this order |
-| `GEMINI_MODEL` / `OPENAI_MODEL` / `ANTHROPIC_MODEL` | no | defaults: gemini-2.0-flash, gpt-4o-mini, claude-3-5-haiku-20241022 |
+| `GEMINI_MODEL` / `OPENAI_MODEL` / `ANTHROPIC_MODEL` | no | defaults: gemini-flash-lite-latest, gpt-4o-mini, claude-3-5-haiku-20241022 |
 | `CODE_RUN_TIMEOUT` / `CODE_RUN_MAX_MEMORY_MB` | no | defaults 10s / 256MB |
 
 ## Deploy on Render
