@@ -429,8 +429,8 @@ def test_recovery_code_bound_to_requesting_device(client, auth, auth2):
     r = client.post("/v1/recovery/request", headers=auth2)
     code = r.json()["code"]
     # a third device cannot claim a code it did not request
-    r3 = client.post("/v1/devices/register")
-    third = {"Authorization": f"Bearer {r3.json()['device_token']}"}
+    r3 = client.post("/v1/devices/register", headers={"CF-Connecting-IP": "203.0.113.90", "X-Forwarded-For": "203.0.113.90, 172.68.1.1, 10.0.0.1"})
+    third = {"Authorization": f"Bearer {r3.json()['device_token']}", "CF-Connecting-IP": "203.0.113.90", "X-Forwarded-For": "203.0.113.90, 172.68.1.1, 10.0.0.1"}
     foreign = client.post("/v1/recovery/claim", json={"code": code}, headers=third)
     unknown = client.post("/v1/recovery/claim", json={"code": "XXXX-XXXX-XXXX-XXXX"}, headers=auth2)
     # uniform response: a guesser cannot tell a real code from an unknown one
@@ -442,7 +442,7 @@ def test_recovery_code_bound_to_requesting_device(client, auth, auth2):
 
 
 def test_register_rate_limited_per_ip(client):
-    ip = {"CF-Connecting-IP": "203.0.113.7"}
+    ip = {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "203.0.113.7, 172.68.1.1, 10.0.0.1"}
     for _ in range(10):
         r = client.post("/v1/devices/register", headers=ip)
         assert r.status_code == 200, r.text
@@ -461,13 +461,13 @@ def test_claim_rate_limited_per_ip(client):
         db.close()
     ip = "203.0.113.8"
     for i in range(30):
-        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.114.{i}"})
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.114.{i}", "X-Forwarded-For": f"203.0.114.{i}, 172.68.1.1, 10.0.0.1"})
         assert reg.status_code == 200
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip, "X-Forwarded-For": f"{ip}, 172.68.1.1, 10.0.0.1"}
         r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
         assert r.status_code == 404, (i, r.status_code, r.text)
-    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": "203.0.114.99"})
-    h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
+    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": "203.0.114.99", "X-Forwarded-For": "203.0.114.99, 172.68.1.1, 10.0.0.1"})
+    h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip, "X-Forwarded-For": f"{ip}, 172.68.1.1, 10.0.0.1"}
     r = client.post("/v1/recovery/claim", json={"code": "AAAA-BBBB-CCCC-DDDD"}, headers=h)
     assert r.status_code == 429
     assert "network" in r.json()["detail"]
@@ -489,8 +489,8 @@ def test_grant_locks_after_10_failures_despite_new_devices(client, auth2):
     # 10 failures spread over 4 freshly-registered devices (under each one's
     # per-device limit of 5, so the per-device layer alone would allow more)
     for d in range(4):
-        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.115.{d}"})
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.116.{d}"}
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.115.{d}", "X-Forwarded-For": f"203.0.115.{d}, 172.68.1.1, 10.0.0.1"})
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.116.{d}", "X-Forwarded-For": f"203.0.116.{d}, 172.68.1.1, 10.0.0.1"}
         for _ in range(3 if d < 2 else 2):
             r = client.post("/v1/recovery/claim", json={"code": code}, headers=h)
             assert r.status_code == 404, r.text
@@ -519,9 +519,9 @@ def test_global_backoff_after_50_failures(client):
     fails = 0
     d = 0
     while not seen_global_429 and d < 20:
-        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.117.{d}"})
+        reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": f"203.0.117.{d}", "X-Forwarded-For": f"203.0.117.{d}, 172.68.1.1, 10.0.0.1"})
         assert reg.status_code == 200
-        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.118.{d}"}
+        h = {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": f"203.0.118.{d}", "X-Forwarded-For": f"203.0.118.{d}, 172.68.1.1, 10.0.0.1"}
         for _ in range(5):
             r = client.post("/v1/recovery/claim", json={"code": "BBBB-CCCC-DDDD-EEEE"}, headers=h)
             if r.status_code == 429 and "temporarily busy" in r.json()["detail"]:
@@ -600,9 +600,9 @@ def test_recovery_ignores_old_or_assistant_phrase(client, auth, auth2):
 
 
 def _fresh_device(client, ip):
-    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": ip})
+    reg = client.post("/v1/devices/register", headers={"CF-Connecting-IP": ip, "X-Forwarded-For": f"{ip}, 172.68.1.1, 10.0.0.1"})
     assert reg.status_code == 200, reg.text
-    return {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip}
+    return {"Authorization": f"Bearer {reg.json()['device_token']}", "CF-Connecting-IP": ip, "X-Forwarded-For": f"{ip}, 172.68.1.1, 10.0.0.1"}
 
 
 def _clear_attempts():
@@ -617,27 +617,60 @@ def _clear_attempts():
 
 
 def test_xff_spoofing_does_not_bypass_ip_limits(client):
-    # attacker varies every client-controlled header part (all XFF entries);
-    # CF-Connecting-IP is overwritten by Cloudflare on the real chain, so the
-    # constant CF value emulates the real client IP. The limit must key on it.
+    # the live v5.3 failure: attacker rotates forged LEFT XFF entries. Forged
+    # entries can only accumulate on the left of what Cloudflare/Render append,
+    # so the derivation must keep finding the real client third-from-right.
     real_ip = "203.0.113.50"
     for i in range(10):
-        h = {"CF-Connecting-IP": real_ip, "X-Forwarded-For": f"1.2.3.{i}, 10.0.0.{i}"}
+        h = {"CF-Connecting-IP": real_ip,
+             "X-Forwarded-For": f"1.2.3.{i}, 9.9.9.{i}, {real_ip}, 172.68.1.1, 10.0.0.1"}
         r = client.post("/v1/devices/register", headers=h)
         assert r.status_code == 200, (i, r.text)
-    h = {"CF-Connecting-IP": real_ip, "X-Forwarded-For": "9.9.9.9"}
+    h = {"CF-Connecting-IP": real_ip,
+         "X-Forwarded-For": f"8.8.8.8, {real_ip}, 172.68.1.1, 10.0.0.1"}
     assert client.post("/v1/devices/register", headers=h).status_code == 429
 
 
-def test_xff_fallback_second_from_right(client):
-    # no CF header (non-Cloudflare chain): second-from-right XFF entry is the
-    # client as observed by the trusted edge; the rightmost (edge) may vary
+def test_direct_connection_forgery_lands_in_shared_unknown_bucket(client):
+    # direct-origin forgery attempt: attacker crafts CF-Connecting-IP and a
+    # CF-range XFF entry, but Render appends their real PUBLIC ip to the right
+    # of the forged CF entry, breaking the chain invariant -> unknown bucket
+    for i in range(10):
+        h = {"CF-Connecting-IP": f"9.9.9.{i}",
+             "X-Forwarded-For": f"9.9.9.{i}, 172.68.1.1, 8.8.8.8, 10.0.0.1"}
+        r = client.post("/v1/devices/register", headers=h)
+        assert r.status_code == 200, (i, r.text)  # unknown bucket allows 10/hr
+    h = {"CF-Connecting-IP": "9.9.9.99", "X-Forwarded-For": "9.9.9.99, 172.68.1.1, 8.8.8.8, 10.0.0.1"}
+    assert client.post("/v1/devices/register", headers=h).status_code == 429
+    # honest Cloudflare users are unaffected by the unknown bucket being full
+    ok = {"CF-Connecting-IP": "203.0.113.70", "X-Forwarded-For": "203.0.113.70, 172.68.1.1, 10.0.0.1"}
+    assert client.post("/v1/devices/register", headers=ok).status_code == 200
+
+
+def test_cf_header_mismatch_is_untrusted(client):
+    # CF-Connecting-IP must equal the derived client; a mismatch means the
+    # request did not really come through Cloudflare
+    h = {"CF-Connecting-IP": "6.6.6.6", "X-Forwarded-For": "203.0.113.80, 172.68.1.1, 10.0.0.1"}
+    r = client.get("/v1/health")  # any route; derivation is what matters
+    assert r.status_code == 200
+    # mismatched request must land in the unknown bucket: verify via register
+    # counting (unknown bucket was filled by the previous test is not relied
+    # upon; use a unit-level check instead)
+    from types import SimpleNamespace
+    from app.ratelimit import derive_client_ip
+    lower = {k.lower(): v for k, v in h.items()}
+    req = SimpleNamespace(headers=SimpleNamespace(get=lambda k, d="": lower.get(k, d)))
+    assert derive_client_ip(req) == ("unknown", "unknown")
+
+
+def test_xff_structural_derivation_without_cf_header(client):
+    # valid CF chain but CF-Connecting-IP absent: derived client still usable
     real_ip = "203.0.113.60"
     for i in range(10):
-        h = {"X-Forwarded-For": f"{real_ip}, 198.51.100.{i}"}
+        h = {"X-Forwarded-For": f"{real_ip}, 172.68.2.{i}, 10.0.0.1"}
         r = client.post("/v1/devices/register", headers=h)
         assert r.status_code == 200, (i, r.text)
-    h = {"X-Forwarded-For": f"{real_ip}, 198.51.100.250"}
+    h = {"X-Forwarded-For": f"{real_ip}, 172.68.2.250, 10.0.0.1"}
     assert client.post("/v1/devices/register", headers=h).status_code == 429
 
 

@@ -1,5 +1,5 @@
 def _register(client):
-    r = client.post("/v1/devices/register")
+    r = client.post("/v1/devices/register", headers={"CF-Connecting-IP": "203.0.113.92", "X-Forwarded-For": "203.0.113.92, 172.68.1.1, 10.0.0.1"})
     return r.json()["device_token"]
 
 
