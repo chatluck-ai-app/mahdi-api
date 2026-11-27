@@ -7,6 +7,11 @@ from .. import config
 BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
+def _headers() -> dict:
+    # The key travels in a header, never in the URL, so error text cannot carry it.
+    return {"x-goog-api-key": config.GEMINI_API_KEY}
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -28,9 +33,11 @@ class GeminiProvider:
         }
 
     async def complete(self, messages: list[dict], system: str) -> str:
-        url = f"{BASE}/{config.GEMINI_MODEL}:generateContent?key={config.GEMINI_API_KEY}"
+        url = f"{BASE}/{config.GEMINI_MODEL}:generateContent"
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, json=self._payload(messages, system))
+            r = await client.post(
+                url, json=self._payload(messages, system), headers=_headers()
+            )
             r.raise_for_status()
             data = r.json()
         return "".join(
@@ -40,11 +47,12 @@ class GeminiProvider:
 
     async def stream(self, messages: list[dict], system: str):
         url = (
-            f"{BASE}/{config.GEMINI_MODEL}:streamGenerateContent"
-            f"?alt=sse&key={config.GEMINI_API_KEY}"
+            f"{BASE}/{config.GEMINI_MODEL}:streamGenerateContent?alt=sse"
         )
         async with httpx.AsyncClient(timeout=httpx.Timeout(60, read=300)) as client:
-            async with client.stream("POST", url, json=self._payload(messages, system)) as r:
+            async with client.stream(
+                "POST", url, json=self._payload(messages, system), headers=_headers()
+            ) as r:
                 r.raise_for_status()
                 async for line in r.aiter_lines():
                     if not line.startswith("data:"):
